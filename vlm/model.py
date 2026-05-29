@@ -118,10 +118,12 @@ class VisionLanguageModel(nn.Module):
 
         if mask_mode == "image_bidir":
             n_text = inputs_embeds.shape[1] - n_visual
+            T = inputs_embeds.shape[1]
             bidir_mask = build_image_bidir_mask(
                 n_visual, n_text, inputs_embeds.device, inputs_embeds.dtype
             )
             kwargs["attention_mask"] = bidir_mask.expand(B, -1, -1, -1)
+            kwargs["position_ids"] = torch.arange(T, device=inputs_embeds.device).unsqueeze(0).expand(B, -1)
 
         if labels is not None:
             kwargs["labels"] = labels
