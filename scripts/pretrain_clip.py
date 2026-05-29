@@ -1,8 +1,5 @@
 """§3 — CLIP-style pretraining on EuroSAT.
 
-You implement the training loop. This script provides the CLI scaffolding,
-config loading, and logging hooks.
-
 Usage:
     uv run python scripts/pretrain_clip.py --config configs/clip_eurosat.yaml
 """
@@ -10,9 +7,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 import yaml
 
 
@@ -25,28 +24,126 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def get_cosine_schedule_with_warmup(optimizer, warmup_steps: int, total_steps: int):
+    """Cosine LR schedule with linear warmup."""
+    def lr_lambda(step: int) -> float:
+        if step < warmup_steps:
+            return step / max(1, warmup_steps)
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
 def main() -> None:
     args = parse_args()
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    device = torch.device(args.device)
 
-    # TODO: students fill in the training loop.
-    # Sketch:
-    #   1. Build train/val/test loaders via vlm.data.build_eurosat_loaders.
-    #   2. Build the ViT (basics.vit.ViT) and FrozenTextEncoder.
-    #   3. Build ProjectionHeads + logit_scale.
-    #   4. AdamW optimizer, cosine LR schedule.
-    #   5. For each epoch:
-    #         - Train one epoch with vlm.clip.clip_loss.
-    #         - Clamp logit_scale.data to <= ln(100).
-    #         - Compute zero-shot val accuracy via vlm.eval.zeroshot_classification_accuracy.
-    #         - Log to stdout (and W&B if args.wandb).
-    #   6. Save the best checkpoint to args.output_dir / "best.pt".
-    raise NotImplementedError(
-        "Implement the CLIP pretraining loop in scripts/pretrain_clip.py."
+    if args.wandb:
+        import wandb
+        wandb.init(entity="dsheth_caltech", project="cs148b-hw3", name="clip_eurosat", config=cfg)  # noqa
+
+    from vlm.data import build_eurosat_loaders, EUROSAT_CLASSES
+    from basics.vit import ViT
+    from basics.text_encoder import FrozenTextEncoder
+    from vlm.clip import ProjectionHeads, init_logit_scale, clip_loss
+    from vlm.eval import zeroshot_classification_accuracy
+
+    vcfg = cfg["vit"]
+    train_dl, val_dl, test_dl = build_eurosat_loaders(
+        img_size=vcfg["img_size"],
+        batch_size=cfg["train"]["batch_size"],
+        num_workers=cfg["train"]["num_workers"],
     )
+
+    vit = ViT(**vcfg).to(device)
+    text_enc = FrozenTextEncoder(cfg["text_encoder"]["model_name"]).to(device)
+
+    d_proj = cfg["projection"]["d_proj"]
+    proj_heads = ProjectionHeads(vcfg["d_model"], text_enc.embedding_dim, d_proj).to(device)
+    logit_scale = init_logit_scale().to(device)
+
+    ocfg = cfg["optim"]
+    params = list(vit.parameters()) + list(proj_heads.parameters()) + [logit_scale]
+    optimizer = torch.optim.AdamW(
+        params,
+        lr=ocfg["lr"],
+        weight_decay=ocfg["weight_decay"],
+        betas=tuple(ocfg["betas"]),
+    )
+
+    num_epochs = cfg["train"]["num_epochs"]
+    steps_per_epoch = len(train_dl)
+    total_steps = num_epochs * steps_per_epoch
+    scheduler = get_cosine_schedule_with_warmup(optimizer, ocfg["warmup_steps"], total_steps)
+
+    class_prompts = [f"a satellite image of {c}" for c in EUROSAT_CLASSES]
+    class_indices = list(range(len(EUROSAT_CLASSES)))
+    log_every = cfg["train"]["log_every"]
+    ln100 = math.log(100)
+
+    best_val_acc = 0.0
+    global_step = 0
+
+    for epoch in range(num_epochs):
+        vit.train()
+        proj_heads.train()
+        epoch_loss = 0.0
+        for step, (images, captions) in enumerate(train_dl):
+            images = images.to(device)
+            img_feats = vit(images)
+            txt_feats = text_enc(captions).to(device)
+            img_proj, txt_proj = proj_heads(img_feats, txt_feats)
+            loss = clip_loss(img_proj, txt_proj, logit_scale)
+
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(params, 1.0)
+            optimizer.step()
+            scheduler.step()
+            logit_scale.data.clamp_(max=ln100)
+
+            epoch_loss += loss.item()
+            global_step += 1
+
+            if global_step % log_every == 0:
+                lr = scheduler.get_last_lr()[0]
+                print(f"epoch={epoch+1} step={global_step} loss={loss.item():.4f} lr={lr:.6f} scale={logit_scale.exp().item():.2f}")
+                if args.wandb:
+                    import wandb
+                    wandb.log({"train/loss": loss.item(), "train/lr": lr, "train/logit_scale": logit_scale.exp().item()}, step=global_step)
+
+        val_acc = zeroshot_classification_accuracy(
+            vit, proj_heads, text_enc, val_dl, class_prompts, class_indices, device
+        )
+        avg_loss = epoch_loss / len(train_dl)
+        print(f"Epoch {epoch+1}/{num_epochs} avg_loss={avg_loss:.4f} val_acc={val_acc:.4f}")
+
+        if args.wandb:
+            import wandb
+            wandb.log({"val/zero_shot_acc": val_acc, "train/epoch_loss": avg_loss}, step=global_step)
+
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            ckpt = {
+                "epoch": epoch + 1,
+                "vit_state": vit.state_dict(),
+                "proj_heads_state": proj_heads.state_dict(),
+                "logit_scale": logit_scale.data,
+                "val_acc": val_acc,
+                "vit_config": vcfg,
+            }
+            torch.save(ckpt, args.output_dir / "best.pt")
+            print(f"  Saved best checkpoint (val_acc={val_acc:.4f})")
+
+    print(f"Training complete. Best val_acc={best_val_acc:.4f}")
+
+    if args.wandb:
+        import wandb
+        wandb.finish()
 
 
 if __name__ == "__main__":

@@ -1,32 +1,15 @@
-"""LoRA adapters — §4.
-
-You implement: LoRALinear, apply_lora_to_attention.
-"""
+"""LoRA adapters — §4."""
 
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
 
+from basics.model import Head
+
 
 class LoRALinear(nn.Module):
-    """Low-rank adapter wrapping an existing nn.Linear layer.
-
-    Computes:  W' x = base_layer(x) + (alpha / rank) * (B A x)
-
-    where:
-      - base_layer is the frozen pretrained linear (its weights are not trained).
-      - A in R^{rank x d_in}  is initialized with kaiming_uniform_.
-      - B in R^{d_out x rank} is initialized to zero (so the adapted layer
-        starts equal to the base layer).
-
-    Only A and B receive gradients; base_layer's parameters are frozen.
-
-    Args:
-        base_layer: Existing nn.Linear to wrap.
-        rank:       Adapter rank `r` (typically 4..32).
-        alpha:      Scaling factor; effective scale is `alpha / rank`.
-    """
+    """Low-rank adapter wrapping an existing nn.Linear layer."""
 
     def __init__(self, base_layer: nn.Linear, rank: int, alpha: float) -> None:
         super().__init__()
@@ -35,33 +18,27 @@ class LoRALinear(nn.Module):
         self.scaling = alpha / rank
         self.base_layer = base_layer
 
-        # TODO: freeze base_layer's parameters.
-        # TODO: create self.A (nn.Parameter, shape (rank, d_in), kaiming-uniform init).
-        # TODO: create self.B (nn.Parameter, shape (d_out, rank), zero init).
-        raise NotImplementedError
+        for p in self.base_layer.parameters():
+            p.requires_grad_(False)
+
+        d_in = base_layer.in_features
+        d_out = base_layer.out_features
+        self.A = nn.Parameter(torch.empty(rank, d_in))
+        self.B = nn.Parameter(torch.zeros(d_out, rank))
+        nn.init.kaiming_uniform_(self.A)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # TODO: return base_layer(x) + scaling * (x @ A.T @ B.T)
-        raise NotImplementedError
+        return self.base_layer(x) + self.scaling * (x @ self.A.T @ self.B.T)
 
 
 def apply_lora_to_attention(model: nn.Module, rank: int, alpha: float) -> nn.Module:
-    """Replace `q_proj` and `v_proj` linear layers in every attention head
-    with LoRA-wrapped versions.
+    """Replace q_proj and v_proj in every Head with LoRA-wrapped versions."""
+    for p in model.parameters():
+        p.requires_grad_(False)
 
-    The HW writeup recommends adapting only Q and V projections (per the
-    original LoRA paper). Walk the module tree and wherever you find an
-    nn.Linear named `q_proj` or `v_proj` inside a Head, swap it for a
-    LoRALinear.
+    for name, module in model.named_modules():
+        if isinstance(module, Head):
+            module.q_proj = LoRALinear(module.q_proj, rank, alpha)
+            module.v_proj = LoRALinear(module.v_proj, rank, alpha)
 
-    The function modifies `model` in place AND returns it for convenience.
-
-    Args:
-        model: A module containing one or more `basics.model.Head` instances
-               (e.g., a ViT).
-        rank, alpha: Forwarded to LoRALinear.
-    """
-    # TODO: implement.
-    # Hint: iterate model.named_modules(), check isinstance(m, Head), and
-    # set m.q_proj = LoRALinear(m.q_proj, rank, alpha) (and same for v_proj).
-    raise NotImplementedError
+    return model
