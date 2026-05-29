@@ -33,11 +33,12 @@ class VisionLanguageModel(nn.Module):
 
     def _get_visual_embeds(self, images: torch.Tensor, injection: InjectionMode) -> torch.Tensor:
         """Get projected visual embeddings based on injection mode."""
+        decoder_dtype = next(self.decoder.parameters()).dtype
         if injection == "cls":
             vis_feats = self.vit(images).unsqueeze(1)  # (B, 1, d_image)
         else:
             vis_feats = self.vit(images, return_all_tokens=True)  # (B, N+1, d_image)
-        return self.projector(vis_feats)  # (B, n_vis, d_decoder)
+        return self.projector(vis_feats).to(decoder_dtype)  # (B, n_vis, d_decoder)
 
     def forward(
         self,
