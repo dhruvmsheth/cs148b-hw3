@@ -132,7 +132,7 @@ def main() -> None:
 
     decoder = AutoModelForCausalLM.from_pretrained(
         decoder_cfg["model_name"],
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         attn_implementation=decoder_cfg.get("attn_implementation", "eager"),
     )
 

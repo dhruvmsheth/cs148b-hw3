@@ -71,7 +71,7 @@ def main() -> None:
 
     decoder = AutoModelForCausalLM.from_pretrained(
         "HuggingFaceTB/SmolLM2-360M-Instruct",
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
     )
     if image_token_id is not None:
         decoder.resize_token_embeddings(len(tokenizer))
