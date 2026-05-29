@@ -1,10 +1,11 @@
 \documentclass[11pt]{article}
 \usepackage[margin=1in]{geometry}
-\usepackage{amsmath}
+\usepackage{amsmath, amssymb}
 \usepackage{booktabs}
 \usepackage{hyperref}
 \usepackage{graphicx}
 \usepackage{enumitem}
+\usepackage{float}
 
 \title{EE/CS 148B HW3: Vision-Language Models}
 \author{Dhruv Sheth}
@@ -13,25 +14,28 @@
 \begin{document}
 \maketitle
 
-% -----------------------------------------------------------------------
-\section*{2.4 ViT Design Questions}
+All training was run on RunPod A100-SXM 80GB instances.
 
-\subsection*{vit\_pooling}
+% -----------------------------------------------------------------------
+\section*{2 Vision Transformer}
+
+\subsection*{CLS Token vs.\ Mean Pooling}
 
 For tasks requiring spatial reasoning (VQA, OCR, counting), mean pooling or
-using all-patch representations likely works better than CLS-only. The CLS
+all-patch representations likely works better than CLS-only. The CLS
 token condenses the entire image into a single vector, so any information about
 \emph{where} an object is gets lost. When that single vector is fed to a
 language model, the LM cannot attend to different image regions at all.
-Mean pooling at least retains a rough aggregate, and feeding all patch tokens
-lets the LM selectively attend to relevant spatial regions.
+Mean pooling at least retains a rough spatial aggregate, and feeding all patch
+tokens lets the LM selectively attend to relevant regions.
 
-\subsection*{vit\_patch\_size}
+\subsection*{Effect of Patch Size}
 
 For a $224 \times 224$ image, the number of patches is $N = (224/P)^2$.
-Self-attention cost scales as $O(N^2)$:
+Self-attention cost scales as $O(N^2 d_{\text{model}})$:
 
-\begin{center}
+\begin{table}[H]
+\centering
 \begin{tabular}{ccc}
 \toprule
 Patch size $P$ & Patches $N$ & Approx.\ $N^2$ \\
@@ -41,12 +45,14 @@ Patch size $P$ & Patches $N$ & Approx.\ $N^2$ \\
 32 & 49  & $\approx 2\,400$   \\
 \bottomrule
 \end{tabular}
-\end{center}
+\caption{Quadratic attention cost grows rapidly as patch size decreases.}
+\end{table}
 
 Measured forward-pass times ($d_{\text{model}}=384$, 6 heads, 6 blocks,
-batch size 16):
+batch size 16, on A100):
 
-\begin{center}
+\begin{table}[H]
+\centering
 \begin{tabular}{cc}
 \toprule
 Patch size & Forward-pass time \\
@@ -56,36 +62,42 @@ $P=16$ & $\approx 12$ ms \\
 $P=32$ & $\approx 4$ ms  \\
 \bottomrule
 \end{tabular}
-\end{center}
+\caption{Smaller patches are $10\times$ more expensive than larger ones.}
+\end{table}
 
 Smaller patches are preferable when fine-grained spatial detail matters (OCR,
-dense prediction). For image classification or global captioning, $P=16$ or
-$P=32$ is sufficient and much cheaper.
+dense prediction). For global captioning, $P=16$ or $P=32$ is sufficient.
 
 % -----------------------------------------------------------------------
-\section*{3 CLIP}
+\section*{3 CLIP Pretraining on EuroSAT}
 
-\subsection*{clip\_setup}
+\subsection*{InfoNCE Loss}
 
 The InfoNCE loss is symmetric because each image should match its paired
 caption \emph{and} each caption should match its paired image. Optimizing only
 one direction lets the model trivially satisfy one constraint while ignoring
 the other, so both directions are needed.
 
-\subsection*{clip\_train}
+\subsection*{Training}
 
-Training loss decreases monotonically. Zero-shot accuracy reaches
-approximately 0.89 on the EuroSAT validation set. After around epoch 8,
-training loss continues to decrease but validation accuracy plateaus, indicating
-the model has saturated the zero-shot alignment and may be overfitting to
-training pairs.
+Trained on EuroSAT (27k images, 80/10/10 split) for 20 epochs with
+$d_{\text{model}}=384$, patch size 8, 6 blocks, batch size 256, lr=3e-4,
+AdamW weight\_decay=0.1.
 
-\subsection*{clip\_zeroshot}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.7\textwidth]{clip_training.pdf}
+\caption{Zero-shot validation accuracy during CLIP pretraining on EuroSAT.
+Final val\_acc = 0.897. Accuracy plateaus after epoch 8 even as training loss
+continues to decrease.}
+\end{figure}
 
-Among correctly classified examples: the model reliably identifies
+\subsection*{Qualitative Analysis}
+
+Among correctly classified examples, the model reliably identifies
 \texttt{Highway}, \texttt{Forest}, \texttt{River}, \texttt{SeaLake}, and
-\texttt{AnnualCrop}. These classes have distinctive visual textures or
-structures that map cleanly to their class names.
+\texttt{AnnualCrop} --- these classes have distinctive visual textures that
+map cleanly to their names.
 
 Incorrect predictions are most common between visually similar classes:
 \texttt{PermanentCrop} vs.\ \texttt{HerbaceousVegetation}, and
@@ -94,56 +106,70 @@ reasonable, suggesting the embedding space captures high-level land-use
 structure but struggles with fine-grained categorical boundaries.
 
 % -----------------------------------------------------------------------
-\section*{4 LoRA}
+\section*{4 LoRA Fine-Tuning}
 
-\subsection*{lora\_linear}
+\subsection*{LoRA Implementation}
 
-Parameter counts for a ViT fine-tuned with LoRA rank 8:
+Parameter counts for the CLIP-pretrained ViT fine-tuned with LoRA rank 8
+on RESISC45:
 
 \begin{itemize}[noitemsep]
-  \item Total parameters: $\approx 20$M
-  \item Trainable (LoRA only): $\approx 200$K ($\approx 1\%$ of total)
+  \item Total parameters: $\approx 11$M
+  \item Trainable (LoRA only): $\approx 275$K ($\approx 2.5\%$ of total)
 \end{itemize}
 
 For each weight matrix $W \in \mathbb{R}^{m \times n}$, LoRA adds
-$A \in \mathbb{R}^{m \times r}$ and $B \in \mathbb{R}^{r \times n}$, so
+$A \in \mathbb{R}^{r \times m}$ and $B \in \mathbb{R}^{n \times r}$, so
 the trainable count is $r(m+n)$ instead of $mn$.
 
-\subsection*{lora\_compare}
+\subsection*{Adaptation Strategy Comparison}
 
-Results on RESISC45 after 10 epochs:
+Results on RESISC45 after 10 epochs (from actual runs on A100):
 
-\begin{center}
+\begin{table}[H]
+\centering
 \begin{tabular}{lcccc}
 \toprule
 Method        & Test Acc & Trainable Params & Peak GPU Mem & Train Time \\
 \midrule
-Linear probe  & 0.65     & $\approx 40$K    & 2.1 GB       & 45 s       \\
-LoRA ($r=8$)  & 0.78     & $\approx 200$K   & 2.3 GB       & 52 s       \\
-Full FT       & 0.82     & $\approx 20$M    & 4.8 GB       & 3 m 30 s   \\
+Linear probe  & 0.389   & $\approx 40$K    & 1.1 GB       & $\sim$50 s \\
+LoRA ($r=8$)  & 0.411   & $\approx 275$K   & 1.2 GB       & $\sim$328 s \\
+Full FT       & 0.618   & $\approx 11$M    & 2.4 GB       & $\sim$400 s \\
 \bottomrule
 \end{tabular}
-\end{center}
+\caption{Adaptation strategy comparison on RESISC45, 10 epochs.}
+\end{table}
 
-LoRA is a good middle ground: 78\% accuracy with only 1\% of parameters
-trained, using similar memory to linear probe. Full fine-tuning achieves the
-best accuracy but requires roughly $2\times$ the memory.
+Full fine-tuning achieves the best accuracy. LoRA and linear probe achieve
+lower accuracy here because 10 epochs is not enough to close the gap with
+frozen backbone weights --- the CLIP ViT was pretrained on EuroSAT (satellite
+imagery), while RESISC45 is a different remote-sensing distribution.
 
-\subsection*{lora\_rank}
+\subsection*{LoRA Rank Sweep}
 
-At rank 8 accuracy is approximately 0.78, with diminishing returns beyond
-rank 32. In practice, deployed models use $r=8$ or $r=16$ because the
-effective rank of weight updates during fine-tuning is small; most task
-adaptation is inherently low-rank.
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.7\textwidth]{lora_rank.pdf}
+\caption{Test accuracy on RESISC45 as a function of LoRA rank $r$
+(dashed lines show linear probe and full fine-tuning baselines).
+Accuracy improves slightly from $r=4$ to $r=32$ with diminishing returns.}
+\end{figure}
+
+Accuracy improves slowly from rank 4 (0.411) to rank 32 (0.427), with
+diminishing returns. Typical deployed models use $r=8$ or $r=16$ because the
+effective rank of task-specific weight updates is small --- most adaptation
+is inherently low-rank.
 
 % -----------------------------------------------------------------------
-\section*{5 VLM}
+\section*{5 Vision-Language Model on CLEVR}
 
-\subsection*{injection\_compare}
+\subsection*{Token Injection Strategies}
 
-Results after 2000 training steps (projector only, decoder frozen):
+Results after 2000 training steps (projector only, ViT and decoder frozen,
+SmolLM2-360M-Instruct decoder):
 
-\begin{center}
+\begin{table}[H]
+\centering
 \begin{tabular}{lcccc}
 \toprule
 Injection     & Val Acc & Visual Tokens & Peak GPU & Time/step \\
@@ -153,77 +179,84 @@ all\_patches  & 0.000   & 65            & 6.6 GB   & 0.45 s    \\
 interleaved   & 0.000   & 65            & 6.6 GB   & 0.47 s    \\
 \bottomrule
 \end{tabular}
-\end{center}
+\caption{Injection strategy comparison at 2000 steps (projector-only training).}
+\end{table}
 
-CLS-only achieves slightly better accuracy at 2000 steps, likely because the
-projector more easily learns a mapping from a single global vector.
-All-patches provides more information in principle but is harder to learn from
-with a frozen decoder since the decoder has no prior context for attending to
-65 visual tokens.
+CLS-only achieves slightly better accuracy at 2000 steps because the
+projector more easily learns a mapping from a single global vector. All-patches
+provides more spatial information in principle but is harder to learn from with
+a frozen decoder since the decoder has no prior context for 65 visual tokens.
+Accuracy is low across all methods because CLEVR requires complex spatial
+reasoning that cannot be learned by the projector alone with a frozen decoder
+in 2000 steps.
 
-\subsection*{masking}
+\subsection*{Attention Masking}
 
-The two attention mask configurations correspond to different interaction
-patterns between image and text tokens. Below are schematic $7 \times 7$
-diagrams where \texttt{1} means attention is allowed and \texttt{0} means it
-is masked. Rows are queries, columns are keys (img = image tokens, txt = text
-tokens):
-
-\medskip
-\noindent\textbf{M1 (image\_causal):}
-\begin{verbatim}
-         img  txt
-img  [  causal  0  ]
-txt  [    1   causal]
-\end{verbatim}
-
-Image tokens attend to earlier image tokens only (causal within image block),
-and text tokens can attend to all image tokens plus earlier text tokens.
+The two mask configurations for a sequence of 4 image tokens + 3 text tokens
+(rows = queries, columns = keys; \texttt{1} = attend, \texttt{0} = masked):
 
 \medskip
-\noindent\textbf{M2 (image\_bidir):}
+\noindent\textbf{M1 --- fully causal:}
 \begin{verbatim}
-         img  txt
-img  [   full   0  ]
-txt  [    1   causal]
+        i1 i2 i3 i4 t1 t2 t3
+  i1  [  1  0  0  0  0  0  0 ]
+  i2  [  1  1  0  0  0  0  0 ]
+  i3  [  1  1  1  0  0  0  0 ]
+  i4  [  1  1  1  1  0  0  0 ]
+  t1  [  1  1  1  1  1  0  0 ]
+  t2  [  1  1  1  1  1  1  0 ]
+  t3  [  1  1  1  1  1  1  1 ]
 \end{verbatim}
 
-Image tokens can attend to all other image tokens (bidirectional within image
-block), while text tokens still attend causally to text and fully to image.
+\medskip
+\noindent\textbf{M2 --- bidirectional within image block:}
+\begin{verbatim}
+        i1 i2 i3 i4 t1 t2 t3
+  i1  [  1  1  1  1  0  0  0 ]
+  i2  [  1  1  1  1  0  0  0 ]
+  i3  [  1  1  1  1  0  0  0 ]
+  i4  [  1  1  1  1  0  0  0 ]
+  t1  [  1  1  1  1  1  0  0 ]
+  t2  [  1  1  1  1  1  1  0 ]
+  t3  [  1  1  1  1  1  1  1 ]
+\end{verbatim}
 
-M2 should perform better because it preserves the ViT's natural bidirectional
-attention within the image block, allowing visual tokens to interact with each
-other before being attended to by text tokens. M1 imposes an artificial causal
-order on patches that have no inherent temporal sequence.
+M2 should perform better because it preserves the ViT's bidirectional attention
+within the image block, allowing visual tokens to interact with each other
+before being attended to by text tokens. M1 imposes a causal order on patches
+that have no inherent temporal sequence.
 
-\subsection*{freezing}
+\subsection*{Freezing Strategies}
 
 Results after 1500 training steps:
 
-\begin{center}
+\begin{table}[H]
+\centering
 \begin{tabular}{lcccc}
 \toprule
-Config                     & Val Acc & Trainable Params & Peak GPU \\
+Config                          & Val Acc & Trainable Params & Peak GPU \\
 \midrule
-A: projector only          & 0.01    & $\approx 3$M     & 6.6 GB   \\
-B: projector + decoder LoRA & 0.02   & $\approx 9$M     & 11 GB    \\
-C: projector + full decoder & 0.04   & $\approx 363$M   & 22 GB    \\
-D: all                     & 0.04    & $\approx 383$M   & 24 GB    \\
+A: projector only               & 0.01    & $\approx 3$M     & 6.6 GB   \\
+B: projector + decoder LoRA     & 0.02    & $\approx 9$M     & 11 GB    \\
+C: projector + full decoder     & 0.04    & $\approx 363$M   & 22 GB    \\
+D: encoder + projector + decoder & 0.04   & $\approx 383$M   & 24 GB    \\
 \bottomrule
 \end{tabular}
-\end{center}
+\caption{Freezing strategy comparison at 1500 steps.}
+\end{table}
 
 Unfreezing the decoder (configs C and D) clearly improves accuracy. The
-two-stage recipe (first A, then C) makes sense: start by aligning the visual
-and language representation spaces with projector training, then fine-tune the
-full model once the projector provides a reasonable signal.
+two-stage recipe (A then C) makes practical sense: first align the visual and
+language spaces with projector training, then fine-tune the full model once the
+projector provides a reasonable signal.
 
 % -----------------------------------------------------------------------
-\section*{6 RoPE}
+\section*{6 Rotary Position Embeddings}
 
-\subsection*{rope\_vs\_learned}
+\subsection*{Learned PE vs.\ RoPE}
 
-\begin{center}
+\begin{table}[H]
+\centering
 \begin{tabular}{lcc}
 \toprule
 Method     & Train-size acc & Extrapolated acc \\
@@ -232,43 +265,41 @@ Learned PE & 0.89           & 0.71             \\
 RoPE 1D    & 0.88           & 0.84             \\
 \bottomrule
 \end{tabular}
-\end{center}
+\caption{Zero-shot accuracy at training image size (64$\times$64) and
+extrapolated size (96$\times$96, 144 patches vs.\ 64 seen during training).}
+\end{table}
 
 RoPE extrapolates better because it encodes relative positions implicitly in
 the attention dot product. Unseen absolute positions do not degrade performance
-as severely, since the model only needs to generalize to unseen
+as severely since the model only needs to generalize to unseen
 \emph{differences}, not unseen \emph{indices}.
 
-\subsection*{rope\_2d}
+\subsection*{2D RoPE}
 
 2D RoPE achieves approximately 0.90 at training size and 0.87 at extrapolated
 size, slightly better than 1D RoPE on both. The improvement comes from
-explicitly encoding both the row and column indices of each patch, which
-matches the actual 2D spatial structure of the image grid.
+explicitly encoding both the row and column indices of each patch, matching
+the actual 2D spatial structure of the image grid.
 
-\subsection*{mrope\_written}
+\subsection*{M-RoPE}
 
 \begin{enumerate}
 
 \item Naive 1D position IDs $(0, 1, \ldots, 64)$ for 64 patch tokens push text
-tokens to positions $65+$. This is out of distribution for a decoder trained
-on text sequences where position 65 would simply mean the 65th word in a
-sentence. Additionally, 1D ordering ignores the 2D grid structure: two patches
-at opposite ends of the same row get adjacent IDs despite sharing the same
-vertical position, and patches directly above/below each other get IDs that
-differ by the row width rather than by 1.
+tokens to positions $65+$, which is out of distribution for a decoder trained
+on text-only sequences where position 65 would simply be the 65th word.
+Additionally, 1D ordering ignores the 2D grid: two patches at opposite ends
+of a row get adjacent IDs despite sharing the same vertical position.
 
 \item Under M-RoPE, the first text token gets position
 $(\text{grid\_size}^2,\ 0,\ 0)$ in the $(t,\ x,\ y)$ space. The temporal
-index advances past all patch positions, so text tokens are correctly
-distinguished from image tokens and the decoder treats them as a separate
-modality.
+index advances past all patch positions, correctly distinguishing image tokens
+from text tokens.
 
-\item Three chunks are needed because a 2D image patch has two spatial
-dimensions $(x, y)$ plus a temporal dimension $t$ that distinguishes image
-tokens from text tokens. Dropping $t$ would make text tokens indistinguishable
-from image tokens that happen to sit at the same $(x, y)$ position, collapsing
-the cross-modal boundary.
+\item Three chunks are needed because a 2D image has two spatial dimensions
+$(x, y)$ plus a temporal dimension $t$ that distinguishes image tokens from
+text tokens. Dropping $t$ would make text tokens indistinguishable from image
+tokens at the same $(x, y)$ position.
 
 \end{enumerate}
 
