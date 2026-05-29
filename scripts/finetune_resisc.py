@@ -72,7 +72,7 @@ def main() -> None:
     run_name = f"resisc_{args.method}_rank{args.rank}"
     if args.wandb:
         import wandb
-        wandb.init(entity="dhruvsheth", project="cs148b-hw3", name=run_name, config={  # noqa
+        wandb.init(entity="dsheth_caltech", project="cs148b-hw3", name=run_name, config={  # noqa
             "method": args.method, "rank": args.rank, "alpha": args.alpha, **cfg
         })
 

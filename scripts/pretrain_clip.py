@@ -44,7 +44,7 @@ def main() -> None:
 
     if args.wandb:
         import wandb
-        wandb.init(entity="dhruvsheth", project="cs148b-hw3", name="clip_eurosat", config=cfg)  # noqa
+        wandb.init(entity="dsheth_caltech", project="cs148b-hw3", name="clip_eurosat", config=cfg)  # noqa
 
     from vlm.data import build_eurosat_loaders, EUROSAT_CLASSES
     from basics.vit import ViT
