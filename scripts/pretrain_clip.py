@@ -64,10 +64,17 @@ def main() -> None:
 
     d_proj = cfg["projection"]["d_proj"]
     proj_heads = ProjectionHeads(vcfg["d_model"], text_enc.embedding_dim, d_proj).to(device)
-    logit_scale = init_logit_scale().to(device)
+
+    class LogitScaleModule(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.scale = init_logit_scale()
+
+    scale_module = LogitScaleModule().to(device)
+    logit_scale = scale_module.scale
 
     ocfg = cfg["optim"]
-    params = list(vit.parameters()) + list(proj_heads.parameters()) + [logit_scale]
+    params = list(vit.parameters()) + list(proj_heads.parameters()) + list(scale_module.parameters())
     optimizer = torch.optim.AdamW(
         params,
         lr=ocfg["lr"],
