@@ -95,7 +95,7 @@ def main() -> None:
 
     if args.wandb:
         import wandb
-        wandb.init(entity="pantheoninc-pantheon-inc", project="cs148b-hw3", name=run_name, config={
+        wandb.init(entity="dsheth", project="cs148b-hw3", name=run_name, config={
             "injection": args.injection, "mask_mode": args.mask_mode,
             "freeze_config": args.freeze_config, **cfg,
         })
