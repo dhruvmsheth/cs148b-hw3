@@ -193,33 +193,14 @@ in 2000 steps.
 \subsection*{Attention Masking}
 
 The two mask configurations for a sequence of 4 image tokens + 3 text tokens
-(rows = queries, columns = keys; \texttt{1} = attend, \texttt{0} = masked):
+are shown below. The dashed red line separates image tokens (i1--i4) from
+text tokens (t1--t3).
 
-\medskip
-\noindent\textbf{M1 --- fully causal:}
-\begin{verbatim}
-        i1 i2 i3 i4 t1 t2 t3
-  i1  [  1  0  0  0  0  0  0 ]
-  i2  [  1  1  0  0  0  0  0 ]
-  i3  [  1  1  1  0  0  0  0 ]
-  i4  [  1  1  1  1  0  0  0 ]
-  t1  [  1  1  1  1  1  0  0 ]
-  t2  [  1  1  1  1  1  1  0 ]
-  t3  [  1  1  1  1  1  1  1 ]
-\end{verbatim}
-
-\medskip
-\noindent\textbf{M2 --- bidirectional within image block:}
-\begin{verbatim}
-        i1 i2 i3 i4 t1 t2 t3
-  i1  [  1  1  1  1  0  0  0 ]
-  i2  [  1  1  1  1  0  0  0 ]
-  i3  [  1  1  1  1  0  0  0 ]
-  i4  [  1  1  1  1  0  0  0 ]
-  t1  [  1  1  1  1  1  0  0 ]
-  t2  [  1  1  1  1  1  1  0 ]
-  t3  [  1  1  1  1  1  1  1 ]
-\end{verbatim}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{attention_masks.pdf}
+\caption{M1 (fully causal) vs.\ M2 (bidirectional within image block). Blue = attend, white = masked.}
+\end{figure}
 
 M2 should perform better because it preserves the ViT's bidirectional attention
 within the image block, allowing visual tokens to interact with each other

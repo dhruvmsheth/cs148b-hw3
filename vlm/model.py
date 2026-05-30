@@ -185,6 +185,7 @@ class VisionLanguageModel(nn.Module):
             max_new_tokens=max_new_tokens,
             **gen_kwargs,
         )
-        # Decode only the newly generated tokens
-        generated = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
+        input_len = inputs_embeds.shape[1]
+        generated_ids = outputs[:, input_len:]
+        generated = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
         return generated
